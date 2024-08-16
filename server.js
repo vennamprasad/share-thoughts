@@ -3,65 +3,81 @@ const dotenv = require('dotenv');
 const http = require('http');
 const socketIO = require('socket.io');
 const cors = require('cors');
-const findFreePort = require('find-free-port');
+const admin = require('firebase-admin');
+const path = require('path');
 
 // Load environment variables from .env file
 dotenv.config();
 
-// Console log to confirm the port from .env
-console.log(`PORT from .env: ${process.env.PORT}`);
+// Initialize Firebase Admin SDK with Firestore
+const serviceAccount = require(path.join(__dirname, './config/serviceAccountKey.json'));
 
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    // No need to include the databaseURL for Firestore
+});
+// Reference to Firestore
+const db = admin.firestore();
+const messagesCollection = db.collection('messages');
+// Reference to Firestore
 const app = express();
-
-// Enable CORS if needed (e.g., for cross-domain clients)
 app.use(cors());
 
-// Create an HTTP server and bind it to Express
 const server = http.createServer(app);
-
-// Attach Socket.IO to the HTTP server
 const io = socketIO(server);
 
-// Socket.IO connection handler
 io.on('connection', (client) => {
     console.log('Connection received');
 
-    // Listen for 'new_message' event from clients
-    client.on('new_message', (chat) => {
+    client.on('new_message', async (chat) => {
         console.log(`New message received: ${chat}`);
-        // Broadcast the message to all connected clients
+
+        try {
+            await messagesCollection.add({
+                message: chat,
+                timestamp: admin.firestore.FieldValue.serverTimestamp()
+            });
+            console.log('Message stored in Firestore');
+        } catch (error) {
+            console.error('Error storing message in Firestore:', error);
+        }
+
         io.emit('broadcast', chat);
     });
 
-    // Handle disconnection
     client.on('disconnect', () => {
         console.log('Client disconnected');
     });
 });
 
-// Simple route to confirm server is running
 app.get('/', (req, res) => {
     res.send('Server is running');
 });
 
-// Define the port to listen on, with a default fallback
-const port = process.env.PORT || 4000;
+// Set a fixed port
+const PORT = process.env.PORT || 4000;
 
-findFreePort(port, (err, freePort) => {
-    if (err) {
-        console.error('Error finding a free port:', err);
-        process.exit(1);
-    }
-    server.listen(freePort, () => {
-        console.log(`Server running at ${freePort}...`);
-    });
+server.listen(PORT, () => {
+    console.log(`Server running at http://localhost:${PORT}/`);
 });
 
-// Graceful shutdown handling
-process.on('SIGINT', () => {
-    console.log('Shutting down server...');
+// Enhanced shutdown handling
+const gracefulShutdown = (signal) => {
+    console.log(`Received ${signal}. Shutting down server...`);
+
     server.close(() => {
-        console.log('Server shut down.');
-        process.exit(0);
+        console.log('HTTP server closed.');
+        io.close(() => {
+            console.log('Socket.IO connections closed.');
+            process.exit(0);
+        });
     });
-});
+
+    setTimeout(() => {
+        console.error('Forcing shutdown due to timeout...');
+        process.exit(1);
+    }, 10000);
+};
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
