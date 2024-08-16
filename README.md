@@ -1,1 +1,2 @@
-Share thoughts 
+Share thoughts with sockets
+
